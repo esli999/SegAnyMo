@@ -26,6 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 import time
+import shutil
 
 
 def run_command(command, description):
@@ -44,7 +45,7 @@ def run_command(command, description):
     return True
 
 
-def process_single_video(video_path, output_dir, gpu, efficiency, config, step, script_dir):
+def process_single_video(video_path, output_dir, processing_dir, gpu, efficiency, config, step, script_dir):
     """Process a single video through the complete pipeline."""
     
     # Validate video exists
@@ -55,7 +56,19 @@ def process_single_video(video_path, output_dir, gpu, efficiency, config, step, 
     # Get absolute paths
     video_path = os.path.abspath(video_path)
     output_dir = os.path.abspath(output_dir)
+    processing_dir = os.path.abspath(processing_dir)
     config_path = os.path.join(script_dir, config)
+    
+    # Create processing directory and copy video there
+    os.makedirs(processing_dir, exist_ok=True)
+    video_name = Path(video_path).stem
+    video_ext = Path(video_path).suffix
+    processing_video_path = os.path.join(processing_dir, f"{video_name}{video_ext}")
+    
+    # Copy video to processing directory if not already there
+    if not os.path.exists(processing_video_path):
+        print(f"Copying video to processing directory: {processing_dir}")
+        shutil.copy2(video_path, processing_video_path)
     
     # Create output directories
     moseg_dir = os.path.join(output_dir, 'moseg')
@@ -63,18 +76,17 @@ def process_single_video(video_path, output_dir, gpu, efficiency, config, step, 
     os.makedirs(moseg_dir, exist_ok=True)
     os.makedirs(sam2_dir, exist_ok=True)
     
-    # Get video name
-    video_name = Path(video_path).stem
-    
     print("\n" + "="*80)
     print(f"Processing: {video_name}")
     print("="*80)
-    print(f"Input Video:      {video_path}")
-    print(f"Output Directory: {output_dir}")
-    print(f"GPU ID:           {gpu}")
-    print(f"Efficiency Mode:  {efficiency}")
-    print(f"Config File:      {config_path}")
-    print(f"Frame Stride:     {step}")
+    print(f"Source Video:        {video_path}")
+    print(f"Processing Video:    {processing_video_path}")
+    print(f"Processing Directory: {processing_dir}")
+    print(f"Output Directory:    {output_dir}")
+    print(f"GPU ID:              {gpu}")
+    print(f"Efficiency Mode:     {efficiency}")
+    print(f"Config File:         {config_path}")
+    print(f"Frame Stride:        {step}")
     print("="*80 + "\n")
     
     # Build efficiency flag
@@ -87,10 +99,10 @@ def process_single_video(video_path, output_dir, gpu, efficiency, config, step, 
     start_time = time.time()
     
     try:
-        # Step 1: Data Preprocessing
+        # Step 1: Data Preprocessing (will create intermediate files in processing_dir)
         step1_cmd = (
             f"python core/utils/run_inference.py "
-            f"--video_path {video_path} "
+            f"--video_path {processing_video_path} "
             f"--gpus {gpu} "
             f"--depths --tracks --dinos "
             f"--step {step} "
@@ -103,7 +115,7 @@ def process_single_video(video_path, output_dir, gpu, efficiency, config, step, 
         # Step 2: Motion Segmentation Inference
         step2_cmd = (
             f"python core/utils/run_inference.py "
-            f"--video_path {video_path} "
+            f"--video_path {processing_video_path} "
             f"--motin_seg_dir {moseg_dir} "
             f"--config_file {config_path} "
             f"--gpus {gpu} "
@@ -118,7 +130,7 @@ def process_single_video(video_path, output_dir, gpu, efficiency, config, step, 
         # Step 3: Final Mask Generation with SAM2
         step3_cmd = (
             f"python core/utils/run_inference.py "
-            f"--video_path {video_path} "
+            f"--video_path {processing_video_path} "
             f"--sam2dir {sam2_dir} "
             f"--motin_seg_dir {moseg_dir} "
             f"--gpus {gpu} "
@@ -163,48 +175,40 @@ def process_single_video(video_path, output_dir, gpu, efficiency, config, step, 
 
 
 def main():
+    # Gestalt experiment parameters
+    SCENES = [f'scene_{i:05d}' for i in range(20)]  # scene_00000 to scene_00019
+    TEXTURES = ['texture_00', 'texture_07', 'texture_13', 'texture_16', 'texture_21', 'texture_22', 'texture_25']
+    BASE_PATH = '/home/esli/GenParticles_neural_stimulus/assets/from_thomas'
+    VIDEO_FILENAME = 'output_six_frame.mp4'
+    
     parser = argparse.ArgumentParser(
-        description="Process video(s) through the SegAnyMo pipeline",
+        description="Process Gestalt videos through the SegAnyMo pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single video
-  python process_videos.py --video video.mp4 --output_dir ./results
-  
-  # All videos in directory
-  python process_videos.py --input_dir ./videos --output_dir ./results
-  
-  # Specific videos
-  python process_videos.py --videos v1.mp4 v2.mp4 --output_dir ./results
+  # Process all gestalt videos with default settings
+  python process_gestalt_videos.py
   
   # With efficiency mode
-  python process_videos.py --video video.mp4 --output_dir ./results --efficiency
+  python process_gestalt_videos.py --efficiency
+  
+  # Use specific GPU
+  python process_gestalt_videos.py --gpu 1
         """
-    )
-    
-    # Input options (mutually exclusive)
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument(
-        '--video',
-        type=str,
-        help='Single video file to process'
-    )
-    input_group.add_argument(
-        '--input_dir',
-        type=str,
-        help='Directory containing videos to process'
-    )
-    input_group.add_argument(
-        '--videos',
-        nargs='+',
-        help='List of specific video files to process'
     )
     
     parser.add_argument(
         '--output_dir',
         type=str,
-        required=True,
-        help='Directory to save outputs (subdirectory per video in batch mode)'
+        default='gestalt_SegAnyMo_outputs',
+        help='Directory to save all outputs (default: gestalt_SegAnyMo_outputs)'
+    )
+    
+    parser.add_argument(
+        '--processing_dir',
+        type=str,
+        default='SegAnyMo_processing_files',
+        help='Directory to store intermediate processing files (default: SegAnyMo_processing_files)'
     )
     
     parser.add_argument(
@@ -235,95 +239,81 @@ Examples:
     )
     
     parser.add_argument(
-        '--pattern',
-        type=str,
-        default='*.mp4',
-        help='File pattern for input_dir mode (default: *.mp4)'
-    )
-    
-    parser.add_argument(
         '--continue_on_error',
         action='store_true',
-        help='Continue processing remaining videos if one fails (batch mode only)'
+        help='Continue processing remaining videos if one fails'
     )
     
     args = parser.parse_args()
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # Collect video files
+    # Generate all video paths from scene/texture combinations
     video_files = []
-    batch_mode = False
+    missing_videos = []
     
-    if args.video:
-        # Single video mode
-        video_files = [args.video]
-        
-    elif args.input_dir:
-        # Directory mode
-        batch_mode = True
-        input_dir = Path(args.input_dir)
-        if not input_dir.exists():
-            print(f"[ERROR] Input directory not found: {args.input_dir}")
-            sys.exit(1)
-        
-        video_files = sorted(input_dir.glob(args.pattern))
-        video_files = [str(f) for f in video_files]
-        
-        if not video_files:
-            print(f"[ERROR] No videos found matching pattern '{args.pattern}' in {args.input_dir}")
-            sys.exit(1)
-    
-    elif args.videos:
-        # Multiple videos mode
-        batch_mode = True
-        for video in args.videos:
-            if not os.path.exists(video):
-                print(f"[WARNING] Video not found, skipping: {video}")
+    for scene in SCENES:
+        for texture in TEXTURES:
+            video_path = os.path.join(BASE_PATH, scene, texture, VIDEO_FILENAME)
+            if os.path.exists(video_path):
+                video_files.append(video_path)
             else:
-                video_files.append(video)
-        
-        if not video_files:
-            print("[ERROR] None of the specified videos exist")
-            sys.exit(1)
+                missing_videos.append(video_path)
+    
+    # Report on found vs missing videos
+    print(f"\nFound {len(video_files)} videos out of {len(SCENES) * len(TEXTURES)} expected")
+    if missing_videos:
+        print(f"Missing {len(missing_videos)} videos:")
+        for missing in missing_videos[:10]:  # Show first 10
+            print(f"  - {missing}")
+        if len(missing_videos) > 10:
+            print(f"  ... and {len(missing_videos) - 10} more")
+    
+    if not video_files:
+        print("[ERROR] No videos found to process!")
+        sys.exit(1)
+    
+    batch_mode = True
     
     # Print processing summary
     print("\n" + "="*80)
-    print("SegAnyMo Video Processing Pipeline")
+    print("SegAnyMo Gestalt Video Processing Pipeline")
     print("="*80)
-    print(f"Mode:             {'BATCH' if batch_mode else 'SINGLE'}")
-    print(f"Videos to process: {len(video_files)}")
-    print(f"Output directory:  {args.output_dir}")
-    print(f"GPU ID:            {args.gpu}")
-    print(f"Efficiency mode:   {args.efficiency}")
+    print(f"Scenes:                {len(SCENES)} (scene_00000 to scene_{len(SCENES)-1:05d})")
+    print(f"Textures:              {len(TEXTURES)} ({', '.join(TEXTURES)})")
+    print(f"Videos to process:     {len(video_files)}")
+    print(f"Processing directory:  {args.processing_dir}")
+    print(f"Output directory:      {args.output_dir}")
+    print(f"GPU ID:                {args.gpu}")
+    print(f"Efficiency mode:       {args.efficiency}")
     print("="*80)
-    
-    if len(video_files) > 1:
-        print("\nVideos:")
-        for i, video in enumerate(video_files, 1):
-            print(f"  {i}. {Path(video).name}")
-        print("="*80)
     
     # Process videos
     results = []
     total_start_time = time.time()
     
     for i, video_path in enumerate(video_files, 1):
-        if batch_mode:
-            print(f"\n\n{'#'*80}")
-            print(f"# Video {i}/{len(video_files)}: {Path(video_path).name}")
-            print(f"{'#'*80}\n")
-            
-            # Each video gets its own subdirectory in batch mode
-            video_name = Path(video_path).stem
-            video_output_dir = os.path.join(args.output_dir, video_name)
-        else:
-            # Single video uses the output_dir directly
-            video_output_dir = args.output_dir
+        print(f"\n\n{'#'*80}")
+        
+        # Extract scene and texture from path
+        path_parts = Path(video_path).parts
+        scene = path_parts[-3]  # e.g., 'scene_00000'
+        texture = path_parts[-2]  # e.g., 'texture_00'
+        
+        print(f"# Video {i}/{len(video_files)}: {scene}/{texture}")
+        print(f"{'#'*80}\n")
+        
+        # Create subdirectory name: scene_texture
+        subdir_name = f"{scene}_{texture}"
+        video_output_dir = os.path.join(args.output_dir, subdir_name)
+        
+        # Create processing directory that mirrors the scene/texture structure
+        video_processing_dir = os.path.join(args.processing_dir, scene, texture)
         
         success, elapsed = process_single_video(
             video_path=video_path,
             output_dir=video_output_dir,
+            processing_dir=video_processing_dir,
             gpu=args.gpu,
             efficiency=args.efficiency,
             config=args.config,
@@ -332,45 +322,46 @@ Examples:
         )
         
         results.append({
-            'video': Path(video_path).name,
+            'video': f"{scene}/{texture}",
             'success': success,
             'time': elapsed
         })
         
         if not success and not args.continue_on_error:
-            if batch_mode:
-                print("\n[ERROR] Processing failed. Stopping batch processing.")
-                print("Use --continue_on_error to continue despite failures.")
+            print("\n[ERROR] Processing failed. Stopping batch processing.")
+            print("Use --continue_on_error to continue despite failures.")
             break
     
-    # Print final summary for batch mode
-    if batch_mode:
-        total_elapsed = time.time() - total_start_time
-        successful = sum(1 for r in results if r['success'])
-        failed = len(results) - successful
-        
-        print("\n\n" + "="*80)
-        print("BATCH PROCESSING COMPLETE")
-        print("="*80)
-        print(f"\nTotal time:        {total_elapsed:.1f} seconds ({total_elapsed/60:.1f} minutes)")
-        print(f"Videos processed:  {len(results)}")
-        print(f"Successful:        {successful} ✅")
-        print(f"Failed:            {failed} ❌")
-        print("\nDetailed Results:")
-        print("-" * 80)
-        
-        for result in results:
-            status = "✅ SUCCESS" if result['success'] else "❌ FAILED"
-            time_str = f"{result['time']:.1f}s"
-            print(f"  {status:12} | {time_str:10} | {result['video']}")
-        
-        print("="*80)
-        print(f"\nAll outputs saved to: {args.output_dir}")
-        print("="*80 + "\n")
-        
-        # Exit with error code if any failed
-        if failed > 0:
-            sys.exit(1)
+    # Print final summary
+    total_elapsed = time.time() - total_start_time
+    successful = sum(1 for r in results if r['success'])
+    failed = len(results) - successful
+    
+    print("\n\n" + "="*80)
+    print("GESTALT VIDEO PROCESSING COMPLETE")
+    print("="*80)
+    print(f"\nTotal time:        {total_elapsed:.1f} seconds ({total_elapsed/60:.1f} minutes)")
+    print(f"                   ({total_elapsed/3600:.2f} hours)")
+    print(f"Videos processed:  {len(results)}")
+    print(f"Successful:        {successful} ✅")
+    print(f"Failed:            {failed} ❌")
+    print(f"\nAverage time per video: {total_elapsed/len(results):.1f} seconds")
+    print("\nDetailed Results:")
+    print("-" * 80)
+    
+    for result in results:
+        status = "✅ SUCCESS" if result['success'] else "❌ FAILED"
+        time_str = f"{result['time']:.1f}s"
+        print(f"  {status:12} | {time_str:10} | {result['video']}")
+    
+    print("="*80)
+    print(f"\nFinal outputs saved to:       {args.output_dir}")
+    print(f"Intermediate files saved to:  {args.processing_dir}")
+    print("="*80 + "\n")
+    
+    # Exit with error code if any failed
+    if failed > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
